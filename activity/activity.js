@@ -1,226 +1,277 @@
 define(["webL10n",
-        "sugar-web/activity/shortcut",
-        "sugar-web/bus",
-        "sugar-web/env",
-        "sugar-web/datastore",
-        "sugar-web/graphics/icon",
-        "sugar-web/graphics/activitypalette"], function (
-    l10n, shortcut, bus, env, datastore, icon, activitypalette) {
+	"sugar-web/activity/shortcut",
+	"sugar-web/bus",
+	"sugar-web/env",
+	"sugar-web/datastore",
+	"sugar-web/presence",
+	"sugar-web/graphics/icon",
+	"sugar-web/graphics/activitypalette"
+], function (
+	l10n, shortcut, bus, env, datastore, presence, icon, activitypalette) {
 
-    'use strict';
+	'use strict';
 
-    var datastoreObject = null;
+	var datastoreObject = null;
 
-    var activity = {};
+	var presenceCallback = null;
+	var presenceResponse = null;
 
-    activity.setup = function () {
-        bus.listen();
+	var activity = {};
 
-        l10n.start();
+	activity.setup = function () {
+		bus.listen();
 
-        function sendPauseEvent() {
-            var pauseEvent = document.createEvent("CustomEvent");
-            pauseEvent.initCustomEvent('activityPause', false, false, {
-                                       'cancelable': true});
-            window.dispatchEvent(pauseEvent);
-        }
-        bus.onNotification("activity.pause", sendPauseEvent);
+		l10n.start();
 
-        // An activity that handles 'activityStop' can also call
-        // event.preventDefault() to prevent the close, and explicitly
-        // call activity.close() after storing.
+		function sendPauseEvent() {
+			var pauseEvent = document.createEvent("CustomEvent");
+			pauseEvent.initCustomEvent('activityPause', false, false, {
+				'cancelable': true
+			});
+			window.dispatchEvent(pauseEvent);
+		}
+		bus.onNotification("activity.pause", sendPauseEvent);
 
-        function sendStopEvent() {
-            var stopEvent = document.createEvent("CustomEvent");
-            stopEvent.initCustomEvent('activityStop', false, false, {
-                                      'cancelable': true});
+		// An activity that handles 'activityStop' can also call
+		// event.preventDefault() to prevent the close, and explicitly
+		// call activity.close() after storing.
+		function sendStopEvent() {
+			var stopEvent = document.createEvent("CustomEvent");
+			stopEvent.initCustomEvent('activityStop', false, false, {
+				'cancelable': true
+			});
+			var result = window.dispatchEvent(stopEvent);
+			if (result) {
+				if (env.isSugarizer()) {
+					datastoreObject.save(function () {
+						datastore.waitPendingSave(function () {
+							activity.close();
+						});
+					});
+				} else {
+					activity.close();
+				}
+			}
+		}
+		bus.onNotification("activity.stop", sendStopEvent);
 
-            var result = window.dispatchEvent(stopEvent);
-            if (result) {
-                activity.close();
-            }
-        }
-        bus.onNotification("activity.stop", sendStopEvent);
+		datastoreObject = new datastore.DatastoreObject();
 
-        datastoreObject = new datastore.DatastoreObject();
+		var activityButton = document.getElementById("activity-button");
 
-        var activityButton = document.getElementById("activity-button");
+		var activityPalette = new activitypalette.ActivityPalette(
+			activityButton, datastoreObject);
 
-        var activityPalette = new activitypalette.ActivityPalette(
-            activityButton, datastoreObject);
+		// Make the activity stop with the stop button.
+		var stopButton = document.getElementById("stop-button");
+		stopButton.addEventListener('click', function (e) {
+			sendStopEvent();
+		});
 
-        // Colorize the activity icon.
-        activity.getXOColor(function (error, colors) {
-            icon.colorize(activityButton, colors);
-            var invokerElem =
-                document.querySelector("#activity-palette .palette-invoker");
-            icon.colorize(invokerElem, colors);
-        });
+		shortcut.add("Ctrl", "Q", this.close);
 
-        // Make the activity stop with the stop button.
-        var stopButton = document.getElementById("stop-button");
-        stopButton.addEventListener('click', function (e) {
-            sendStopEvent();
-        });
+		env.getEnvironment(function (error, environment) {
+			var l10n = {
+				"en": "{{name}} Activity",
+				"fr": "Activité {{name}}",
+				"es": "Actividad {{name}}",
+				"pt": "{{name}} Atividade",
+				"de": "Aktivität {{name}}"
+			};
+			if (!environment.objectId) {
+				datastoreObject.setMetadata({
+					"title": env.isSugarizer() ?
+						(l10n[environment.user.language] || l10n["en"]).replace("{{name}}", environment.activityName) : environment.activityName + " Activity",
+					"title_set_by_user": "0",
+					"activity": environment.bundleId,
+					"activity_id": environment.activityId
+				});
+			}
+			if (env.isSugarizer()) {
+				presence.joinNetwork(function (error, presence) {
+					if (environment.sharedId) {
+						presence.joinSharedActivity(environment.sharedId, function () {
+							var group_color = presence.getSharedInfo().colorvalue;
+							icon.colorize(activityButton, group_color);
+							datastoreObject.setMetadata({
+								"buddy_color": group_color
+							});
+							datastoreObject.save(function () {});
+						});
+					}
+					if (presenceCallback) {
+						presenceCallback(error, presence);
+					} else {
+						presenceResponse = {
+							error: error,
+							presence: presence
+						};
+					}
+				});
+			}
+			datastoreObject.save(function () {
+				datastoreObject.getMetadata(function (error, metadata) {
+					activityPalette.setTitleDescription(metadata);
+				});
+			});
+			if (environment.standAlone) {
+				document.getElementById("stop-button").style.visibility = "hidden";
+			};
+		});
 
-        shortcut.add("Ctrl", "Q", this.close);
+		// Colorize the activity icon.
+		activity.getXOColor(function (error, colors) {
+			icon.colorize(activityButton, colors);
+			var invokerElem =
+				document.querySelector("#activity-palette .palette-invoker");
+			icon.colorize(invokerElem, colors);
 
-        env.getEnvironment(function (error, environment) {
-            if (!environment.objectId) {
-                datastoreObject.setMetadata({
-                    "title": environment.activityName + " Activity",
-                    "title_set_by_user": "0",
-                    "activity": environment.bundleId,
-                    "activity_id": environment.activityId
-                });
-            }
-            datastoreObject.save(function () {
-                datastoreObject.getMetadata(function (error, metadata) {
-                    activityPalette.setTitleDescription(metadata);
-                });
-            });
-        });
-    };
+			if (env.isSugarizer()) {
+				var buddyIcon = '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\
+                <svg xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:svg="http://www.w3.org/2000/svg" xmlns="http://www.w3.org/2000/svg" width="16" height="16" version="1.0" >\
+                <g transform="translate(37.943468,-309.4636)">\
+                <g transform="matrix(0.05011994,0,0,0.05012004,-41.76673,299.66011)" style="fill:&fill_color;;fill-opacity:1;stroke:&stroke_color;;stroke-opacity:1">\
+                <circle transform="matrix(0.969697,0,0,0.969697,-90.879133,125.06999)" style="fill:&fill_color;;fill-opacity:1;stroke:&stroke_color;;stroke-width:20.62502098;stroke-linecap:round;stroke-linejoin:round;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1" cx="331.38321" cy="134.2677" r="51.220825" />\
+                <path d="m 290.55846,302.47333 -58.81513,59.20058 -59.39461,-59.40024 c -25.19828,-24.48771 -62.7038,13.33148 -38.1941,37.98719 l 60.04451,58.9817 -59.73639,59.42563 c -24.83976,24.97559 12.91592,63.26505 37.66786,37.75282 l 59.95799,-59.28294 58.75912,59.21065 c 24.50656,25.09065 62.43116,-13.00322 37.87956,-37.85772 l -59.24184,-59.02842 58.87574,-59.14782 c 25.1689,-25.18348 -13.0489,-62.75154 -37.80271,-37.84143 z" style="fill:&fill_color;;fill-opacity:1;stroke:&stroke_color;;stroke-width:20.00002098;stroke-linecap:round;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1" />\
+                </g></g></svg>';
+				document.title = document.title + " - Sugarizer";
+				var newicon = buddyIcon.replace(new RegExp("&fill_color;", "g"), colors.fill).replace(new RegExp("&stroke_color;", "g"), colors.stroke);
+				var svg_xml = (new XMLSerializer()).serializeToString((new DOMParser()).parseFromString(newicon, "text/xml"));
+				var canvas = document.createElement('canvas');
+				canvas.width = canvas.height = 16;
+				var ctx = canvas.getContext('2d');
+				var img = new Image();
+				img.src = "data:image/svg+xml;base64," + btoa(svg_xml);
+				img.onload = function () {
+					ctx.drawImage(img, 0, 0);
+					var link = document.querySelector("link[rel*='icon']") || document.createElement('link');
+					link.type = 'image/x-icon';
+					link.rel = 'shortcut icon';
+					link.href = canvas.toDataURL("image/x-icon");
+					document.getElementsByTagName('head')[0].appendChild(link);
+				}
+			}
+		});
+	};
 
-    activity.getDatastoreObject = function () {
-        return datastoreObject;
-    };
+	activity.getDatastoreObject = function () {
+		return datastoreObject;
+	};
 
-    activity.getXOColor = function (callback) {
-        function onResponseReceived(error, result) {
-            if (error === null) {
-                callback(null, {
-                    stroke: result[0][0],
-                    fill: result[0][1]
-                });
-            } else {
-                callback(null, {
-                    stroke: "#00A0FF",
-                    fill: "#8BFF7A"
-                });
-            }
-        }
+	activity.getPresenceObject = function (connectionCallback) {
+		if (presenceResponse == null) {
+			presenceCallback = connectionCallback;
+		} else {
+			connectionCallback(presenceResponse.error, presenceResponse.presence);
+			presenceResponse = null;
+		}
+		return presence;
+	};
 
-        bus.sendMessage("activity.get_xo_color", [], onResponseReceived);
-    };
+	activity.getXOColor = function (callback) {
+		function onResponseReceived(error, result) {
+			if (error === null) {
+				callback(null, {
+					stroke: result[0][0],
+					fill: result[0][1]
+				});
+			} else {
+				callback(null, {
+					stroke: "#00A0FF",
+					fill: "#8BFF7A"
+				});
+			}
+		}
 
-    activity.close = function (callback) {
-        function onResponseReceived(error, result) {
-            if (error === null) {
-                callback(null);
-            } else {
-                callback(error, null);
-            }
-        }
+		bus.sendMessage("activity.get_xo_color", [], onResponseReceived);
+	};
 
-        bus.sendMessage("activity.close", [], onResponseReceived);
-    };
+	activity.close = function (callback) {
+		function onResponseReceived(error, result) {
+			if (error === null) {
+				callback(null);
+			} else {
+				callback(error, null);
+			}
+		}
 
-    activity.showObjectChooser = function (callback) {
-        function onResponseReceived(error, result) {
-            if (error === null) {
-                callback(null, result[0]);
-            } else {
-                callback(error, null);
-            }
-        }
+		bus.sendMessage("activity.close", [], onResponseReceived);
+	};
 
-        bus.sendMessage("activity.show_object_chooser", [], onResponseReceived);
-    };
+	activity.showObjectChooser = function (callback) {
+		function onResponseReceived(error, result) {
+			if (error === null) {
+				callback(null, result[0]);
+			} else {
+				callback(error, null);
+			}
+		}
 
-    activity.showAlert = function (title, message, btnLabel, btnCallback) {
-        if (btnLabel == null) {
-            btnLabel = 'Ok';
-        }
+		bus.sendMessage("activity.show_object_chooser", [], onResponseReceived);
+	};
 
-        // if there are a alert visible, hide it
-        activity.hideAlert();
+	activity.showConfirmationAlert = function (title, message, btnOkLabel,
+		btnCancelLabel, btnCallback) {
+		/*
+		title, message, btnOkLabel and btCancelLabel are str parameters
+		callback is a function called when the user press a button,
+		and receives a boolean with true if the user pressed the Ok button
+		*/
+		if (btnOkLabel == null) {
+			btnOkLabel = 'Ok';
+		}
+		if (btnCancelLabel == null) {
+			btnCancelLabel = 'Cancel';
+		}
 
-        var fragment = document.createDocumentFragment();
-        var div = document.createElement('div');
-        div.className = 'alert';
-        div.id = 'activity-alert';
-        div.innerHTML = '<p><b>' + title + '</b><br/>' + message + '</p>' +
-            '<p class="button-box">' +
-            '<button id="actvity-alert-btn" class="icon">' +
-            '<span class="ok"></span>' +
-            btnLabel + '</button></p>';
-        fragment.appendChild(div);
+		// if there are a alert visible, hide it
+		activity.hideAlert();
 
-        document.body.appendChild(fragment.cloneNode(true));
+		var fragment = document.createDocumentFragment();
+		var div = document.createElement('div');
+		div.className = 'alert';
+		div.id = 'activity-alert';
 
-        var btn = document.getElementById("actvity-alert-btn");
-        btn.addEventListener('click', function (e) {
-            activity.hideAlert();
-            if (btnCallback != null) {
-                btnCallback();
-            }
-        });
+		div.innerHTML = '<p><b>' + title + '</b><br/>' + message + '</p>' +
+			'<p class="button-box">' +
+			'<button id="actvity-alert-ok-btn" class="icon">' +
+			'<span class="ok"></span>' +
+			btnOkLabel + '</button>' +
+			'<button id="actvity-alert-cancel-btn" class="icon">' +
+			'<span class="cancel"></span>' +
+			btnCancelLabel + '</button>' +
+			'</p>';
 
-    };
+		fragment.appendChild(div);
 
-    activity.showConfirmationAlert = function (title, message, btnOkLabel,
-                                               btnCancelLabel, btnCallback) {
-        /*
-        title, message, btnOkLabel and btCancelLabel are str parameters
-        callback is a function called when the user press a button,
-        and receives a boolean with true if the user pressed the Ok button
-        */
-        if (btnOkLabel == null) {
-            btnOkLabel = 'Ok';
-        }
-        if (btnCancelLabel == null) {
-            btnCancelLabel = 'Cancel';
-        }
+		document.body.appendChild(fragment.cloneNode(true));
 
-        // if there are a alert visible, hide it
-        activity.hideAlert();
+		var okBtn = document.getElementById("actvity-alert-ok-btn");
+		var cancelBtn = document.getElementById("actvity-alert-cancel-btn");
 
-        var fragment = document.createDocumentFragment();
-        var div = document.createElement('div');
-        div.className = 'alert';
-        div.id = 'activity-alert';
+		function hideAlertAndReply(result) {
+			activity.hideAlert();
+			if (btnCallback != null) {
+				btnCallback(result);
+			};
+		};
 
-        div.innerHTML = '<p><b>' + title + '</b><br/>' + message + '</p>' +
-            '<p class="button-box">' +
-            '<button id="actvity-alert-ok-btn" class="icon">' +
-            '<span class="ok"></span>' +
-            btnOkLabel + '</button>' +
-            '<button id="actvity-alert-cancel-btn" class="icon">' +
-            '<span class="cancel"></span>' +
-            btnCancelLabel + '</button>' +
-            '</p>';
+		okBtn.addEventListener('click', function (e) {
+			hideAlertAndReply(true);
+		});
 
-        fragment.appendChild(div);
+		cancelBtn.addEventListener('click', function (e) {
+			hideAlertAndReply(false);
+		});
 
-        document.body.appendChild(fragment.cloneNode(true));
+	};
 
-        var okBtn = document.getElementById("actvity-alert-ok-btn");
-        var cancelBtn = document.getElementById("actvity-alert-cancel-btn");
+	activity.hideAlert = function () {
+		var alertNode = document.getElementById("activity-alert");
+		if (alertNode && alertNode.parentNode) {
+			alertNode.parentNode.removeChild(alertNode);
+		};
+	};
 
-        function hideAlertAndReply(result) {
-            activity.hideAlert();
-            if (btnCallback != null) {
-                btnCallback(result);
-            };
-        };
-
-        okBtn.addEventListener('click', function (e) {
-            hideAlertAndReply(true);
-        });
-
-        cancelBtn.addEventListener('click', function (e) {
-            hideAlertAndReply(false);
-        });
-
-    };
-
-    activity.hideAlert = function() {
-        var alertNode = document.getElementById("activity-alert");
-        if (alertNode && alertNode.parentNode) {
-            alertNode.parentNode.removeChild(alertNode);
-        };
-    };
-
-    return activity;
+	return activity;
 });
